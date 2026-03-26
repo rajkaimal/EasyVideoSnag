@@ -57,6 +57,9 @@ chrome.webRequest.onBeforeRequest.addListener(
 
     if (!isVideoFile && !isManifest && !isVideoCDN) return;
 
+    // Skip streaming manifests — they're playlists, not downloadable files.
+    if (isManifest) return;
+
     // Reddit: filter audio-only tracks and DASH/CMAF fragments.
     // Content script finds better pre-muxed sources.
     if (hostname === "v.redd.it") {
@@ -64,7 +67,7 @@ chrome.webRequest.onBeforeRequest.addListener(
       if (/DASH_\d+|CMAF_\d+|m2-res_/i.test(url)) return;
     }
 
-    addNetworkVideo(details.tabId, url, isManifest ? "manifest" : "file");
+    addNetworkVideo(details.tabId, url, "file");
   },
   { urls: ["http://*/*", "https://*/*"], types: ["media", "xmlhttprequest", "other"] }
 );

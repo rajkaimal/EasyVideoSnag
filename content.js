@@ -97,7 +97,7 @@
 
           const url = best?.source?.url || best?.url;
           const height = best?.source?.height || best?.height || "";
-          if (url && !found.has(url)) {
+          if (url && !isManifestUrl(url) && !found.has(url)) {
             found.set(url, {
               src: url,
               title: height ? `${pageTitle} (${height}p)` : pageTitle,
@@ -117,7 +117,7 @@
       try {
         const data = JSON.parse(script.textContent);
         const videoUrl = data.contentUrl || data.url;
-        if (videoUrl && videoUrl.includes("v.redd.it") && !found.has(videoUrl)) {
+        if (videoUrl && videoUrl.includes("v.redd.it") && !isManifestUrl(videoUrl) && !found.has(videoUrl)) {
           found.set(videoUrl, {
             src: videoUrl,
             title: data.name || pageTitle,
@@ -135,7 +135,7 @@
     const ogVideo = document.querySelector('meta[property="og:video"]');
     if (ogVideo) {
       const url = ogVideo.getAttribute("content");
-      if (url && !found.has(url)) {
+      if (url && !isManifestUrl(url) && !found.has(url)) {
         found.set(url, {
           src: url,
           title: pageTitle,
@@ -205,7 +205,7 @@
     const ogVideo = document.querySelector('meta[property="og:video"]');
     if (ogVideo) {
       const url = ogVideo.getAttribute("content");
-      if (url && !found.has(url)) {
+      if (url && !isManifestUrl(url) && !found.has(url)) {
         const ogTitle = document.querySelector('meta[property="og:title"]');
         found.set(url, {
           src: url,
@@ -240,14 +240,20 @@
   function deriveType(src) {
     const ext = src.split("?")[0].split(".").pop().toLowerCase();
     const types = {
-      mp4: "MP4", webm: "WebM", ogg: "OGG", m3u8: "HLS",
-      mpd: "DASH", mov: "MOV", avi: "AVI", mkv: "MKV"
+      mp4: "MP4", webm: "WebM", ogg: "OGG",
+      mov: "MOV", avi: "AVI", mkv: "MKV"
     };
     return types[ext] || "Video";
   }
 
   function isVideoFileUrl(url) {
-    return /\.(mp4|webm|ogg|mov|avi|mkv|m3u8|mpd)(\?|$)/i.test(url);
+    // Only match actual downloadable video files, not streaming manifests.
+    // m3u8 (HLS) and mpd (DASH) are playlists, not playable files.
+    return /\.(mp4|webm|ogg|mov|avi|mkv)(\?|$)/i.test(url);
+  }
+
+  function isManifestUrl(url) {
+    return /\.(m3u8|mpd)(\?|$)/i.test(url);
   }
 
 

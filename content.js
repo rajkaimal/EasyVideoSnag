@@ -42,20 +42,7 @@
       });
     });
 
-    // 2. <iframe> / <embed> pointing to known video hosts
-    document.querySelectorAll("iframe[src], embed[src]").forEach((el) => {
-      const src = el.src;
-      if (isVideoEmbed(src) && !found.has(src)) {
-        found.set(src, {
-          src,
-          title: deriveTitle(src, el),
-          type: "embed",
-          source: "dom"
-        });
-      }
-    });
-
-    // 3. <a> links to video files
+    // 2. <a> links to video files
     document.querySelectorAll("a[href]").forEach((a) => {
       const href = a.href;
       if (isVideoFileUrl(href) && !found.has(href)) {
@@ -263,9 +250,6 @@
     return /\.(mp4|webm|ogg|mov|avi|mkv|m3u8|mpd)(\?|$)/i.test(url);
   }
 
-  function isVideoEmbed(src) {
-    return /youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|twitch\.tv|streamable\.com|facebook\.com\/.*\/videos|tiktok\.com/i.test(src);
-  }
 
   // ---------------------------------------------------------------------------
   // Scan and send

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EasyVideoSnag</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <h1>EasyVideoSnag</h1>
+    <p class="tagline">Detect &amp; download videos</p>
+  </div>
+
+  <div id="status" class="status">
+    <span class="spinner"></span> Scanning for videos…
+  </div>
+
+  <div id="video-list" class="video-list"></div>
+
+  <div id="empty-state" class="empty-state hidden">
+    <p>No videos found on this page.</p>
+    <button id="rescan-btn" class="btn btn-secondary">Rescan Page</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

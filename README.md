@@ -273,11 +273,11 @@ EasyVideoSnag/
 
 ```mermaid
 graph LR
-    CS[content.js] -->|"VIDEOS_FOUND\n{videos: [...]}""| BG[background.js]
-    BG -->|"RESCAN"| CS
-    PO[popup.js] -->|"GET_VIDEOS"| BG
-    BG -->|"{videos: [...]}"| PO
-    BG -->|"VIDEOS_UPDATED"| PO
+    CS[content.js] -->|VIDEOS_FOUND| BG[background.js]
+    BG -->|RESCAN| CS
+    PO[popup.js] -->|GET_VIDEOS| BG
+    BG -->|video list| PO
+    BG -->|VIDEOS_UPDATED| PO
 
     style CS fill:#e74c3c,color:#fff
     style BG fill:#2980b9,color:#fff

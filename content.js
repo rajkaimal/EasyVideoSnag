@@ -5,8 +5,11 @@
 (function () {
   "use strict";
 
+  // Track last sent video list to avoid duplicate messages.
+  let lastSentSignature = "";
+
   function detectVideos() {
-    const found = new Map(); // keyed by src to deduplicate
+    const found = new Map();
 
     // 1. <video> elements (direct src or <source> children)
     document.querySelectorAll("video").forEach((video) => {
@@ -22,7 +25,6 @@
         }
       });
 
-      // Check for data attributes that some players use
       const dataSrc = video.getAttribute("data-src") || video.getAttribute("data-video-src");
       if (dataSrc && !dataSrc.startsWith("blob:")) {
         sources.push(dataSrc);
@@ -80,9 +82,10 @@
     return Array.from(found.values());
   }
 
-  // Reddit embeds video URLs in JSON-LD, shreddit-player data, and the JSON API.
-  // We track whether we found a "good" source (playbackMp4s with audio) so
-  // we can skip inferior duplicates (DASH fragments, fallback_url without audio).
+  // ---------------------------------------------------------------------------
+  // Reddit
+  // ---------------------------------------------------------------------------
+
   function extractRedditVideos(found) {
     const pageTitle = document.querySelector('meta[property="og:title"]')
       ?.getAttribute("content") || document.title || "Reddit Video";
@@ -90,9 +93,7 @@
     let foundGoodSource = false;
 
     // Method 1: shreddit-player with playbackMp4s (pre-muxed, includes audio)
-    // This is the BEST source — full MP4 with audio at various quality levels.
     document.querySelectorAll("shreddit-player, shreddit-player-2").forEach((player) => {
-      // Try multiple attributes — Reddit changes these across redesigns
       const jsonAttr = player.getAttribute("packaged-media-json")
         || player.getAttribute("src")
         || player.getAttribute("data-packaged-media-json");
@@ -101,7 +102,6 @@
         const data = JSON.parse(jsonAttr);
         if (data.playbackMp4s) {
           const mp4s = data.playbackMp4s.permutations || [];
-          // Get highest quality — height can be on source or source.height or top-level
           const best = mp4s.reduce((a, b) => {
             const aH = a?.source?.height || a?.height || 0;
             const bH = b?.source?.height || b?.height || 0;
@@ -120,11 +120,9 @@
             foundGoodSource = true;
           }
         }
-      } catch { /* not JSON, ignore */ }
+      } catch { /* not JSON */ }
     });
 
-    // If we found a pre-muxed MP4 with audio, skip inferior sources
-    // to avoid showing duplicates.
     if (foundGoodSource) return;
 
     // Method 2: JSON-LD script tags
@@ -163,20 +161,20 @@
 
     if (foundGoodSource) return;
 
-    // Method 4: Reddit JSON API (last resort fallback)
-    // Fetches the post's .json endpoint to get fallback_url.
-    // Note: fallback_url is video-only (no audio). Labeled accordingly.
-    fetchRedditJsonApi(found, pageTitle);
+    // Method 4: Reddit JSON API (last resort)
+    fetchRedditJsonApi(pageTitle);
   }
 
-  function fetchRedditJsonApi(found, pageTitle) {
-    // Only works on individual post pages
+  function fetchRedditJsonApi(pageTitle) {
     const postMatch = window.location.pathname.match(/\/comments\/([a-z0-9]+)/i);
     if (!postMatch) return;
 
     const jsonUrl = window.location.pathname.replace(/\/?$/, ".json");
     fetch(jsonUrl, { credentials: "omit" })
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(r.status);
+        return r.json();
+      })
       .then((data) => {
         const post = data?.[0]?.data?.children?.[0]?.data;
         if (!post?.is_video) return;
@@ -184,33 +182,38 @@
         const rv = post.secure_media?.reddit_video || post.media?.reddit_video;
         if (!rv?.fallback_url) return;
 
-        // Skip if we already have any reddit video from DOM detection
-        const hasRedditVideo = Array.from(found.values()).some(
-          (v) => v.src.includes("v.redd.it") || v.src.includes("redd.it")
-        );
-        if (hasRedditVideo) return;
+        // Check stored videos to see if we already have a reddit video
+        chrome.storage.session.get(null, (stored) => {
+          const existingVideos = Object.values(stored).flat();
+          const hasRedditVideo = existingVideos.some(
+            (v) => v.src && (v.src.includes("v.redd.it") || v.src.includes("redd.it"))
+          );
+          if (hasRedditVideo) return;
 
-        const fallbackUrl = rv.fallback_url;
-        const height = rv.height || "unknown";
-        const isGif = rv.is_gif || false;
+          const fallbackUrl = rv.fallback_url;
+          const height = rv.height || "unknown";
+          const isGif = rv.is_gif || false;
 
-        found.set(fallbackUrl, {
-          src: fallbackUrl,
-          title: `${pageTitle} (${height}p${isGif ? "" : ", no audio"})`,
-          type: "MP4",
-          source: "dom"
-        });
+          const video = {
+            src: fallbackUrl,
+            title: `${pageTitle} (${height}p${isGif ? "" : ", no audio"})`,
+            type: "MP4",
+            source: "dom"
+          };
 
-        // Re-send updated list to background
-        chrome.runtime.sendMessage({
-          type: "VIDEOS_FOUND",
-          videos: Array.from(found.values())
+          chrome.runtime.sendMessage({
+            type: "VIDEOS_FOUND",
+            videos: [video]
+          });
         });
       })
-      .catch(() => { /* fetch failed, ignore */ });
+      .catch(() => { /* fetch failed */ });
   }
 
-  // Twitter/X uses og:video meta tags
+  // ---------------------------------------------------------------------------
+  // Twitter/X
+  // ---------------------------------------------------------------------------
+
   function extractTwitterVideos(found) {
     const ogVideo = document.querySelector('meta[property="og:video"]');
     if (ogVideo) {
@@ -226,6 +229,10 @@
       }
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
 
   function deriveTitle(src, element) {
     if (element) {
@@ -246,14 +253,8 @@
   function deriveType(src) {
     const ext = src.split("?")[0].split(".").pop().toLowerCase();
     const types = {
-      mp4: "MP4",
-      webm: "WebM",
-      ogg: "OGG",
-      m3u8: "HLS",
-      mpd: "DASH",
-      mov: "MOV",
-      avi: "AVI",
-      mkv: "MKV"
+      mp4: "MP4", webm: "WebM", ogg: "OGG", m3u8: "HLS",
+      mpd: "DASH", mov: "MOV", avi: "AVI", mkv: "MKV"
     };
     return types[ext] || "Video";
   }
@@ -263,34 +264,46 @@
   }
 
   function isVideoEmbed(src) {
-    return /youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|twitch\.tv/i.test(src);
+    return /youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|twitch\.tv|streamable\.com|facebook\.com\/.*\/videos|tiktok\.com/i.test(src);
   }
+
+  // ---------------------------------------------------------------------------
+  // Scan and send
+  // ---------------------------------------------------------------------------
 
   function scan() {
     const videos = detectVideos();
+
+    // Skip sending if the video list hasn't changed since last scan.
+    const signature = videos.map((v) => v.src).sort().join("|");
+    if (signature === lastSentSignature) return;
+    lastSentSignature = signature;
+
     chrome.runtime.sendMessage({ type: "VIDEOS_FOUND", videos });
   }
 
-  // Initial scan after page loads
+  // Initial scan
   scan();
 
   // Listen for rescan requests from the popup
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "RESCAN") {
+      lastSentSignature = ""; // force re-send
       scan();
     }
   });
 
-  // Observe DOM changes to catch dynamically loaded videos
+  // Observe DOM changes with debounce
   let scanTimeout;
   const observer = new MutationObserver(() => {
-    // Debounce: Reddit and SPAs trigger many rapid mutations
     clearTimeout(scanTimeout);
     scanTimeout = setTimeout(scan, 500);
   });
 
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true
-  });
+  if (document.body) {
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+  }
 })();

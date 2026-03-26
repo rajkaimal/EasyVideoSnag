@@ -9,11 +9,9 @@
 const tabVideos = new Map();
 
 // Video file patterns caught by network interception.
-// Matches actual video file requests, not manifests or API calls.
 const VIDEO_URL_PATTERN = /\.(mp4|webm|ogg|mov|avi|mkv|ts)(\?|$)/i;
 
-// DASH/HLS manifest patterns — these point to the video but aren't
-// directly downloadable. We record the base URL to find the actual segments.
+// DASH/HLS manifest patterns.
 const MANIFEST_PATTERN = /\.(m3u8|mpd)(\?|$)/i;
 
 // Known video CDN hosts where URL paths contain video content.
@@ -24,14 +22,13 @@ const VIDEO_CDN_HOSTS = [
   "video-weaver.*.hls.ttvnw.net"
 ];
 
-// Content types that indicate video responses.
-const VIDEO_CONTENT_TYPES = [
-  "video/mp4",
-  "video/webm",
-  "video/ogg",
-  "application/vnd.apple.mpegurl",  // HLS
-  "application/dash+xml"            // DASH
-];
+// Precompile CDN host matchers for performance — this runs on every request.
+const CDN_MATCHERS = VIDEO_CDN_HOSTS.map((host) => {
+  if (host.includes("*")) {
+    return new RegExp("^" + host.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$");
+  }
+  return host;
+});
 
 // ---------------------------------------------------------------------------
 // Network interception
@@ -39,39 +36,37 @@ const VIDEO_CONTENT_TYPES = [
 
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    // Only care about requests from tabs (not service workers, etc.)
     if (details.tabId < 0) return;
 
     const url = details.url;
-
-    // Skip blob: and data: URLs — not downloadable
     if (url.startsWith("blob:") || url.startsWith("data:")) return;
 
-    // Check if this is a video URL
+    // Parse URL once, reuse for all checks.
+    let hostname;
+    try {
+      hostname = new URL(url).hostname;
+    } catch {
+      return;
+    }
+
     const isVideoFile = VIDEO_URL_PATTERN.test(url);
     const isManifest = MANIFEST_PATTERN.test(url);
-    const isVideoCDN = VIDEO_CDN_HOSTS.some((host) => {
-      if (host.includes("*")) {
-        const regex = new RegExp(host.replace(/\./g, "\\.").replace(/\*/g, ".*"));
-        return regex.test(new URL(url).hostname);
-      }
-      return new URL(url).hostname === host;
-    });
+    const isVideoCDN = CDN_MATCHERS.some((matcher) =>
+      typeof matcher === "string" ? hostname === matcher : matcher.test(hostname)
+    );
 
     if (!isVideoFile && !isManifest && !isVideoCDN) return;
 
-    // For Reddit: v.redd.it serves /DASH_720.mp4, /DASH_480.mp4, etc.
-    // Filter out audio-only tracks (both old DASH and new CMAF formats).
-    // Also skip DASH video fragments — the content script finds better
-    // pre-muxed MP4s (with audio) via shreddit-player or the JSON API.
-    if (url.includes("v.redd.it")) {
+    // Reddit: filter audio-only tracks and DASH/CMAF fragments.
+    // Content script finds better pre-muxed sources.
+    if (hostname === "v.redd.it") {
       if (/DASH_audio|DASH_AUDIO|CMAF_AUDIO/i.test(url)) return;
-      if (/DASH_\d+|CMAF_\d+|m2-res_/i.test(url)) return; // skip DASH/CMAF fragments
+      if (/DASH_\d+|CMAF_\d+|m2-res_/i.test(url)) return;
     }
 
     addNetworkVideo(details.tabId, url, isManifest ? "manifest" : "file");
   },
-  { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "other"] }
+  { urls: ["http://*/*", "https://*/*"], types: ["media", "xmlhttprequest", "other"] }
 );
 
 function addNetworkVideo(tabId, url, kind) {
@@ -80,8 +75,6 @@ function addNetworkVideo(tabId, url, kind) {
   }
 
   const videos = tabVideos.get(tabId);
-
-  // Deduplicate by URL
   if (videos.has(url)) return;
 
   videos.set(url, {
@@ -99,18 +92,15 @@ function deriveTitleFromUrl(url) {
     const u = new URL(url);
     const segments = u.pathname.split("/").filter(Boolean);
 
-    // Reddit: use the post ID from the path (e.g., /abc123/DASH_720.mp4)
     if (u.hostname === "v.redd.it" && segments.length >= 1) {
       const quality = segments[segments.length - 1].replace(/\.\w+$/, "");
       return `Reddit Video (${quality})`;
     }
 
-    // Twitter: video.twimg.com paths have meaningful names
     if (u.hostname === "video.twimg.com") {
       return "Twitter Video";
     }
 
-    // Generic: last path segment
     if (segments.length > 0) {
       return decodeURIComponent(segments[segments.length - 1]).replace(/\.\w+$/, "");
     }
@@ -138,12 +128,10 @@ function updateBadgeAndStorage(tabId) {
   const networkVids = tabVideos.get(tabId);
   if (!networkVids) return;
 
-  // Get existing DOM-detected videos, merge with network-detected
   chrome.storage.session.get(String(tabId), (result) => {
     const domVideos = (result[tabId] || []).filter((v) => v.source !== "network");
     const networkList = Array.from(networkVids.values());
 
-    // Deduplicate across both sources
     const merged = new Map();
     [...domVideos, ...networkList].forEach((v) => {
       if (!merged.has(v.src)) {
@@ -160,6 +148,9 @@ function updateBadgeAndStorage(tabId) {
       text: allVideos.length > 0 ? String(allVideos.length) : ""
     });
     chrome.action.setBadgeBackgroundColor({ tabId, color: "#e74c3c" });
+
+    // Notify popup if it's open
+    chrome.runtime.sendMessage({ type: "VIDEOS_UPDATED" }).catch(() => {});
   });
 }
 
@@ -170,11 +161,7 @@ function updateBadgeAndStorage(tabId) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "VIDEOS_FOUND") {
     const tabId = sender.tab.id;
-
-    // Tag DOM videos with source
     const domVideos = message.videos.map((v) => ({ ...v, source: "dom" }));
-
-    // Merge with any network-detected videos
     const networkVids = tabVideos.get(tabId);
     const networkList = networkVids ? Array.from(networkVids.values()) : [];
 
@@ -194,6 +181,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       text: allVideos.length > 0 ? String(allVideos.length) : ""
     });
     chrome.action.setBadgeBackgroundColor({ tabId, color: "#e74c3c" });
+
+    // Notify popup if it's open
+    chrome.runtime.sendMessage({ type: "VIDEOS_UPDATED" }).catch(() => {});
   }
 
   if (message.type === "GET_VIDEOS") {
@@ -206,12 +196,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ videos: [] });
       }
     });
-    return true; // keep channel open for async response
+    return true;
   }
 });
 
-// Clean up stored data when a tab is closed
+// ---------------------------------------------------------------------------
+// Cleanup
+// ---------------------------------------------------------------------------
+
+// Clear per-tab data on tab close.
 chrome.tabs.onRemoved.addListener((tabId) => {
   chrome.storage.session.remove(String(tabId));
   tabVideos.delete(tabId);
+});
+
+// Clear per-tab data on navigation (prevents stale videos from previous page).
+chrome.webNavigation.onBeforeNavigate.addListener((details) => {
+  // Only top-level navigations, not iframes
+  if (details.frameId !== 0) return;
+  chrome.storage.session.remove(String(details.tabId));
+  tabVideos.delete(details.tabId);
+  chrome.action.setBadgeText({ tabId: details.tabId, text: "" });
+});
+
+// Clear stale session data on extension startup (e.g., after browser crash).
+chrome.runtime.onStartup.addListener(() => {
+  chrome.storage.session.clear();
+  tabVideos.clear();
 });

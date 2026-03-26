@@ -111,6 +111,19 @@ body {
   background: #c0392b;
 }
 
+.btn-primary:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.btn-success {
+  background: #27ae60 !important;
+}
+
+.btn-failed {
+  background: #7f8c8d !important;
+}
+
 .btn-secondary {
   background: #2a2a3e;
   color: #ccc;
